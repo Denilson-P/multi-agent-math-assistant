@@ -1,0 +1,41 @@
+name: Identify Backend OIDC
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  identify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Mostrar identidade OIDC do backend
+        shell: bash
+        run: |
+          TOKEN=$(curl -sSf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" |
+            jq -r '.value')
+
+          export TOKEN
+
+          node -e '
+            const payload = process.env.TOKEN.split(".")[1];
+            const claims = JSON.parse(
+              Buffer.from(payload, "base64url").toString("utf8")
+            );
+
+            console.log(JSON.stringify({
+              iss: claims.iss,
+              aud: claims.aud,
+              sub: claims.sub,
+              repository: claims.repository,
+              ref: claims.ref
+            }, null, 2));
+          '
