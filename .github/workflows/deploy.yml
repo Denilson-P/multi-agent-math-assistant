@@ -1,4 +1,4 @@
-name: Identify Backend OIDC
+name: Deploy Backend to EC2
 
 on:
   push:
@@ -10,32 +10,50 @@ permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION: us-east-1
+  EC2_INSTANCE_ID: i-07e4fd9a1816601ce
+  AWS_ROLE_ARN: arn:aws:iam::814023476568:role/GitHubActions-Deploy-MathAssistant
+
 jobs:
-  identify:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Mostrar identidade OIDC do backend
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Testar build da imagem
+        run: docker build -t math-assistant-backend-ci .
+
+      - name: Autenticar na AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Implantar na EC2 pelo SSM
         shell: bash
         run: |
-          TOKEN=$(curl -sSf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" |
-            jq -r '.value')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$EC2_INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy backend pelo GitHub Actions" \
+            --parameters 'commands=["sudo -u ubuntu -H git -C /home/ubuntu/apps/multi-agent-math-assistant pull --ff-only origin main","cd /home/ubuntu/apps && docker compose up -d --build backend","cd /home/ubuntu/apps && docker compose ps"]' \
+            --query "Command.CommandId" \
+            --output text)
 
-          export TOKEN
+          echo "Comando SSM: $COMMAND_ID"
 
-          node -e '
-            const payload = process.env.TOKEN.split(".")[1];
-            const claims = JSON.parse(
-              Buffer.from(payload, "base64url").toString("utf8")
-            );
+          if ! aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID"; then
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$EC2_INSTANCE_ID" || true
+            exit 1
+          fi
 
-            console.log(JSON.stringify({
-              iss: claims.iss,
-              aud: claims.aud,
-              sub: claims.sub,
-              repository: claims.repository,
-              ref: claims.ref
-            }, null, 2));
-          '
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$EC2_INSTANCE_ID"
